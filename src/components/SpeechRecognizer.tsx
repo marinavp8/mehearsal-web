@@ -17,7 +17,7 @@ interface SpeechRecognizerProps {
 }
 
 const MODEL_PATHS: Record<string, string> = {
-  es: '/models/vosk-model-small-es-0.42.tar.gz',
+  es: '/models/vosk-model-es-prueba.zip',
   en: '/models/model.tar.gz',
 };
 
