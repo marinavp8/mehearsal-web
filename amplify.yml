@@ -1,0 +1,20 @@
+version: 1
+frontend:
+  phases:
+    preBuild:
+      commands:
+        - npm ci
+    build:
+      commands:
+        - npm run build
+  artifacts:
+    baseDirectory: .next
+    files:
+      - '**/*'
+  customHeaders:
+    - pattern: '**/*.tar.gz'
+      headers:
+        - key: 'Content-Type'
+          value: 'application/gzip'
+        - key: 'Content-Disposition'
+          value: 'attachment' 
