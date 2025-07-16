@@ -1,30 +1,34 @@
 "use client"
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { createModel } from 'vosk-browser';
-import { getModelConfig, VoskModelConfig } from '../lib/vosk-models';
 
 type VoskResultMessage = { result: { text: string } };
 type VoskPartialResultMessage = { result: { partial: string } };
 
 interface SpeechRecognizerProps {
   language?: 'es' | 'en';
-  useS3?: boolean;
+  isActive?: boolean;
+  onLanguageChange?: (language: 'es' | 'en') => void;
   onResult?: (text: string) => void;
   onPartialResult?: (text: string) => void;
   onError?: (error: string) => void;
   onLoadingChange?: (loading: boolean) => void;
-  autoStart?: boolean;
   className?: string;
 }
 
+const MODEL_PATHS: Record<string, string> = {
+  es: '/models/vosk-model-small-es-0.42.tar.gz',
+  en: '/models/model.tar.gz',
+};
+
 export default function SpeechRecognizer({
   language = 'es',
-  useS3 = false,
+  isActive = true,
+  onLanguageChange,
   onResult,
   onPartialResult,
   onError,
   onLoadingChange,
-  autoStart = true,
   className = ''
 }: SpeechRecognizerProps) {
   const [result, setResult] = useState<string>('');
@@ -32,7 +36,6 @@ export default function SpeechRecognizer({
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [isListening, setIsListening] = useState<boolean>(false);
-  const [modelInfo, setModelInfo] = useState<VoskModelConfig | null>(null);
 
   const recognizerRef = useRef<any>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -40,39 +43,60 @@ export default function SpeechRecognizer({
   const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
 
-  const updateLoading = useCallback((loading: boolean) => {
+  const updateLoading = (loading: boolean) => {
     setLoading(loading);
     onLoadingChange?.(loading);
-  }, [onLoadingChange]);
+  };
 
-  const updateError = useCallback((error: string) => {
+  const updateError = (error: string | null) => {
     setError(error);
-    onError?.(error);
-  }, [onError]);
+    if (error) onError?.(error);
+  };
 
-  const updateResult = useCallback((text: string) => {
+  const updateResult = (text: string) => {
     setResult(text);
     onResult?.(text);
-  }, [onResult]);
+  };
 
-  const updatePartialResult = useCallback((text: string) => {
+  const updatePartialResult = (text: string) => {
     setPartial(text);
     onPartialResult?.(text);
-  }, [onPartialResult]);
+  };
 
-  const initializeRecognizer = useCallback(async () => {
+  const stopRecognizer = () => {
+    setIsListening(false);
+
+    if (recognizerRef.current?.remove) {
+      recognizerRef.current.remove();
+    }
+
+    if (audioContextRef.current) {
+      audioContextRef.current.close();
+    }
+
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach(track => track.stop());
+    }
+
+    recognizerRef.current = null;
+    audioContextRef.current = null;
+    recognizerNodeRef.current = null;
+    sourceRef.current = null;
+    mediaStreamRef.current = null;
+  };
+
+  const startRecognizer = async () => {
+    if (isListening || !isActive) return;
+
+    let model: any;
+    let mediaStream: MediaStream;
     let cancelled = false;
-    
+
     try {
       updateLoading(true);
       updateError(null);
-      
-      // Get model configuration
-      const config = getModelConfig(language, useS3);
-      setModelInfo(config);
 
-      // Request microphone access
-      const mediaStream = await navigator.mediaDevices.getUserMedia({
+      mediaStream = await navigator.mediaDevices.getUserMedia({
         video: false,
         audio: {
           echoCancellation: true,
@@ -89,34 +113,29 @@ export default function SpeechRecognizer({
 
       mediaStreamRef.current = mediaStream;
 
-      // Create audio context
       const audioContext = new AudioContext();
       audioContextRef.current = audioContext;
 
-      // Load Vosk model
-      const model = await createModel(config.url);
+      // Load model based on selected language
+      model = await createModel(MODEL_PATHS[language]);
 
-      if (cancelled) {
-        model.remove?.();
-        return;
-      }
+      if (cancelled) return;
 
-      // Create recognizer
       const recognizer = new model.KaldiRecognizer(audioContext.sampleRate);
       recognizerRef.current = recognizer;
 
-      // Set up event handlers
-      recognizer.on('result', (message: VoskResultMessage) => {
-        const text = message.result.text;
-        updateResult(text);
+      recognizer.on('result', (message: any) => {
+        if (message.result?.text) {
+          updateResult(message.result.text);
+        }
       });
 
-      recognizer.on('partialresult', (message: VoskPartialResultMessage) => {
-        const text = message.result.partial;
-        updatePartialResult(text);
+      recognizer.on('partialresult', (message: any) => {
+        if (message.result?.partial) {
+          updatePartialResult(message.result.partial);
+        }
       });
 
-      // Create audio processing node
       const recognizerNode = audioContext.createScriptProcessor(4096, 1, 1);
       recognizerNode.onaudioprocess = (event: AudioProcessingEvent) => {
         try {
@@ -128,7 +147,6 @@ export default function SpeechRecognizer({
 
       recognizerNodeRef.current = recognizerNode;
 
-      // Connect audio source
       const source = audioContext.createMediaStreamSource(mediaStream);
       sourceRef.current = source;
 
@@ -148,110 +166,104 @@ export default function SpeechRecognizer({
     return () => {
       cancelled = true;
     };
-  }, [language, useS3, updateLoading, updateError, updateResult, updatePartialResult]);
+  };
 
-  const stopRecognizer = useCallback(() => {
-    setIsListening(false);
-    
-    if (recognizerRef.current?.remove) {
-      recognizerRef.current.remove();
-    }
-    
-    if (audioContextRef.current) {
-      audioContextRef.current.close();
-    }
-    
-    if (mediaStreamRef.current) {
-      mediaStreamRef.current.getTracks().forEach(track => track.stop());
-    }
-    
-    recognizerRef.current = null;
-    audioContextRef.current = null;
-    recognizerNodeRef.current = null;
-    sourceRef.current = null;
-    mediaStreamRef.current = null;
-  }, []);
-
-  const startRecognizer = useCallback(async () => {
-    if (isListening) return;
-    await initializeRecognizer();
-  }, [isListening, initializeRecognizer]);
-
-  const toggleRecognizer = useCallback(async () => {
+  const toggleRecognizer = async () => {
     if (isListening) {
       stopRecognizer();
     } else {
       await startRecognizer();
     }
-  }, [isListening, startRecognizer, stopRecognizer]);
+  };
+
+  const handleLanguageChange = (newLanguage: 'es' | 'en') => {
+    if (isListening) {
+      stopRecognizer();
+    }
+    onLanguageChange?.(newLanguage);
+  };
 
   useEffect(() => {
-    if (autoStart) {
+    if (isActive && !isListening) {
       startRecognizer();
+    } else if (!isActive && isListening) {
+      stopRecognizer();
     }
 
     return () => {
       stopRecognizer();
     };
-  }, [language, useS3]); // Reinitialize when language or S3 setting changes
+  }, [isActive, language]);
 
   return (
-    <div className={`speech-recognizer ${className}`}>
+    <div className={`w-full bg-gray-800 rounded-xl p-6 shadow-xl ${className}`}>
+      <h3 className="text-lg font-semibold mb-4 text-gray-200">Reconocimiento de Voz</h3>
+
       <div className="mb-4">
-        <div className="flex items-center gap-4 mb-2">
+        <div className="flex items-center gap-4 mb-4">
           <button
             onClick={toggleRecognizer}
-            disabled={loading}
-            className={`px-4 py-2 rounded-lg font-medium transition-colors ${
-              isListening
-                ? 'bg-red-500 hover:bg-red-600 text-white'
-                : 'bg-blue-500 hover:bg-blue-600 text-white'
-            } disabled:opacity-50 disabled:cursor-not-allowed`}
+            disabled={loading || !isActive}
+            className={`px-4 py-2 rounded-lg font-medium transition-colors ${isListening
+              ? 'bg-red-500 hover:bg-red-600 text-white'
+              : 'bg-blue-500 hover:bg-blue-600 text-white'
+              } disabled:opacity-50 disabled:cursor-not-allowed`}
           >
-            {loading ? 'Loading...' : isListening ? 'Stop Listening' : 'Start Listening'}
+            {loading ? 'Cargando...' : isListening ? 'Detener' : 'Iniciar'}
           </button>
-          
-          {modelInfo && (
-            <div className="text-sm text-gray-600">
-              <span className="font-medium">{modelInfo.name}</span>
-              <span className="mx-2">•</span>
-              <span>{modelInfo.size}</span>
-            </div>
-          )}
+
+          <select
+            value={language}
+            onChange={e => handleLanguageChange(e.target.value as 'es' | 'en')}
+            disabled={isListening}
+            className="bg-gray-700 text-gray-200 border border-gray-600 rounded px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:opacity-50"
+          >
+            <option value="es">Español</option>
+            <option value="en">English</option>
+          </select>
         </div>
 
         {error && (
-          <div className="text-red-600 text-sm mb-2">
+          <div className="text-red-400 text-sm mb-4 p-3 bg-red-900/20 rounded-lg border border-red-800">
             Error: {error}
           </div>
         )}
 
         {loading && (
-          <div className="text-blue-600 text-sm mb-2">
-            Loading speech recognition model...
+          <div className="text-blue-400 text-sm mb-4 p-3 bg-blue-900/20 rounded-lg border border-blue-800">
+            Cargando modelo de reconocimiento de voz...
           </div>
         )}
       </div>
 
-      <div className="bg-white shadow-md rounded-lg p-4 border">
+      <div className="bg-gray-700/50 rounded-lg p-4 border border-gray-600">
         <div className="mb-3">
-          <label className="text-sm font-medium text-gray-700 block mb-1">
-            Partial Result:
+          <label className="text-sm font-medium text-gray-300 block mb-2">
+            Resultado Parcial:
           </label>
-          <div className="text-gray-600 text-sm min-h-[1.5rem]">
-            {partial || 'Listening...'}
+          <div className="text-gray-400 text-sm min-h-[1.5rem] bg-gray-800/50 rounded px-3 py-2">
+            {partial || 'Escuchando...'}
           </div>
         </div>
-        
+
         <div>
-          <label className="text-sm font-medium text-gray-700 block mb-1">
-            Final Result:
+          <label className="text-sm font-medium text-gray-300 block mb-2">
+            Resultado Final:
           </label>
-          <div className="text-gray-900 font-medium min-h-[1.5rem]">
-            {result || 'No speech detected yet'}
+          <div className="text-gray-200 font-medium min-h-[1.5rem] bg-gray-800/50 rounded px-3 py-2">
+            {result || 'No se ha detectado voz aún'}
           </div>
         </div>
       </div>
+
+      {!isActive && (
+        <div className="mt-4 p-3 bg-gray-700/30 rounded-lg border border-gray-600">
+          <div className="flex items-center gap-2">
+            <div className="w-3 h-3 bg-gray-500 rounded-full"></div>
+            <span className="text-sm text-gray-400">Reconocimiento de voz desactivado</span>
+          </div>
+        </div>
+      )}
     </div>
   );
-} 
+}
